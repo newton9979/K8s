@@ -237,9 +237,12 @@ echo ">>> Step 3: Verify nodes"
 sudo -u ubuntu kubectl get nodes
 sudo -u ubuntu kubectl get pods -o wide -n kube-system
 
-echo ">>> Step 4: Install Weave Net"
-sudo -u ubuntu kubectl apply -f \
-  https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
+echo ">>> Step 4: Install Network"
+#weave network
+#sudo -u ubuntu kubectl apply -f \
+#  https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
+#calico network
+sudo -u ${USER_NAME} kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
 
 echo ">>> Waiting 30 seconds for pods to start..."
 sleep 30
