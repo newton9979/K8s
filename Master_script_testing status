@@ -1,0 +1,129 @@
+#!/bin/bash
+###############################################################################
+# Script Status: Testing 
+# Project      : Kubernetes Cluster Automation using kubeadm
+# Script Name  : master-node-setup.sh
+# Description  : Automates the installation and configuration of a Kubernetes
+#                Control Plane (Master Node) on Ubuntu using kubeadm,
+#                containerd, and Calico CNI.
+#
+# Features:
+#   - System validation and pre-flight checks
+#   - Disable swap and configure kernel parameters
+#   - Install and configure containerd
+#   - Install kubeadm, kubelet, and kubectl
+#   - Initialize Kubernetes Control Plane
+#   - Configure kubectl for root and ubuntu users
+#   - Install Calico CNI
+#   - Verify cluster health
+#   - Generate worker node join command
+#
+# Supported OS : Ubuntu 22.04 LTS / 24.04 LTS / 26.04 LTS
+# Kubernetes   : v1.31.x
+# Container Runtime : containerd
+#
+# Author       : Newton Nandru
+# Role         : Senior Linux & Production Support Engineer |
+#                AWS Cloud & DevOps Engineer
+#
+# Version      : 2.0
+# Created Date : 04-Jul-2026
+# License      : MIT License
+#
+# GitHub       : https://github.com/newton9979/
+# LinkedIn     : www.linkedin.com/in/newton-n-7a062759
+#
+# Disclaimer:
+# This script is intended for learning, lab environments, and DevOps
+# automation projects. Review and test thoroughly before using in
+# production environments.
+###############################################################################
+set -Eeuo pipefail
+
+log(){ echo -e "\n[$(date '+%F %T')] $*"; }
+fail(){ echo "ERROR: $*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || fail "Run as root"
+
+USER_NAME=${SUDO_USER:-ubuntu}
+id "$USER_NAME" >/dev/null 2>&1 || USER_NAME=root
+USER_HOME=$(eval echo "~$USER_NAME")
+
+log "Disable swap"
+swapoff -a
+sed -i '/ swap / s/^/#/' /etc/fstab
+
+log "Kernel modules"
+cat >/etc/modules-load.d/k8s.conf <<EOF
+overlay
+br_netfilter
+EOF
+modprobe overlay
+modprobe br_netfilter
+
+cat >/etc/sysctl.d/k8s.conf <<EOF
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+net.ipv4.ip_forward=1
+EOF
+sysctl --system
+
+log "Install prerequisites"
+apt-get update -y
+apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https conntrack
+
+mkdir -p /etc/apt/keyrings
+
+if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+fi
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" >/etc/apt/sources.list.d/docker.list
+
+apt-get update -y
+apt-get install -y containerd.io
+
+mkdir -p /etc/containerd
+containerd config default >/etc/containerd/config.toml
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+systemctl enable --now containerd
+
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /" >/etc/apt/sources.list.d/kubernetes.list
+
+apt-get update -y
+apt-get install -y kubelet kubeadm kubectl
+apt-mark hold kubelet kubeadm kubectl
+systemctl enable --now kubelet
+
+if [ ! -f /etc/kubernetes/admin.conf ]; then
+ log "Initializing cluster"
+ kubeadm init --pod-network-cidr=192.168.0.0/16 || fail "kubeadm init failed"
+fi
+
+mkdir -p /root/.kube
+cp -f /etc/kubernetes/admin.conf /root/.kube/config
+
+if [ "$USER_NAME" != "root" ]; then
+ mkdir -p "$USER_HOME/.kube"
+ cp -f /etc/kubernetes/admin.conf "$USER_HOME/.kube/config"
+ chown -R "$USER_NAME:$USER_NAME" "$USER_HOME/.kube"
+fi
+
+export KUBECONFIG=/etc/kubernetes/admin.conf
+
+log "Install Calico"
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/calico.yaml
+
+log "Waiting for Calico"
+kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=calico-node --timeout=300s || true
+
+log "Cluster status"
+kubectl cluster-info
+kubectl get nodes -o wide
+kubectl get pods -A
+
+log "Join command"
+kubeadm token create --print-join-command
+
+echo "Master setup completed."
